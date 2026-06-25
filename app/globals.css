@@ -42,3 +42,13 @@ html, body {
 .message-enter {
   animation: fadeInUp 0.3s ease-out;
 }
+
+/* 语音波形动画 */
+@keyframes wave {
+  0%, 100% {
+    height: 8px;
+  }
+  50% {
+    height: 20px;
+  }
+}

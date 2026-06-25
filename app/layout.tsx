@@ -2,11 +2,11 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '坑爹 — 你兄弟',
-  description: '高中同学，穿一条裤子长大的兄弟，随时随地聊两句',
+  title: '坑爹 — 思维操作系统',
+  description: '嘻嘻，好爽啊。一个写嵌入式代码的矛盾体，没办法。',
   openGraph: {
-    title: '坑爹 — 你兄弟',
-    description: '高中同学，穿一条裤子长大的兄弟，随时随地聊两句',
+    title: '坑爹 — 思维操作系统',
+    description: '嘻嘻，好爽啊。一个写嵌入式代码的矛盾体，没办法。',
     type: 'website',
   },
 };
