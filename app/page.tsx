@@ -17,7 +17,8 @@ interface SpeechRecognitionError extends Event {
   message: string;
 }
 
-// 黑客骚话
+type CallState = 'idle' | 'listening' | 'thinking' | 'speaking';
+
 const HACKER_PHRASES = [
   '> 信号接入中...',
   '> 协议握手完成_',
@@ -27,7 +28,6 @@ const HACKER_PHRASES = [
   '> 数据流同步中...',
 ];
 
-// 表情包数据
 const EMOJI_STICKERS = [
   '😂', '🤣', '😭', '🥰', '😍', '🤪', '😎', '🤯',
   '💀', '👻', '🤡', '👀', '🙏', '💪', '🤝', '🫡',
@@ -59,6 +59,14 @@ const CYBER_STICKERS: { label: string; content: string }[] = [
   { label: '故障', content: '⚠️ GLITCH_DETECTED ⚠️' },
 ];
 
+// 通话状态文案
+const CALL_STATUS_TEXT: Record<CallState, string> = {
+  idle: '待机',
+  listening: '正在听...',
+  thinking: '思考中...',
+  speaking: '说话中...',
+};
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -74,26 +82,53 @@ export default function Home() {
   const [glitchTrigger, setGlitchTrigger] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
   const [stickerTab, setStickerTab] = useState<'emoji' | 'meme' | 'cyber'>('emoji');
+  const [callMode, setCallMode] = useState(false);
+  const [callState, setCallState] = useState<CallState>('idle');
+  const [ttsSupported, setTtsSupported] = useState(true);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const stickerPanelRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const messagesRef = useRef(messages);
   const loadingRef = useRef(loading);
+  const callModeRef = useRef(callMode);
+  const synthRef = useRef<SpeechSynthesis | null>(null);
+  const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const lastResponseRef = useRef('');
 
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  useEffect(() => {
-    loadingRef.current = loading;
-  }, [loading]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { loadingRef.current = loading; }, [loading]);
+  useEffect(() => { callModeRef.current = callMode; }, [callMode]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 启动动画：轮换黑客短语
+  // 初始化 TTS
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) {
+      setTtsSupported(false);
+      return;
+    }
+    synthRef.current = window.speechSynthesis;
+
+    const loadVoices = () => {
+      const voices = synthRef.current!.getVoices();
+      // 优先找中文女声
+      let voice = voices.find(v => v.lang === 'zh-CN' && v.name.includes('Xiaoxiao'));
+      if (!voice) voice = voices.find(v => v.lang === 'zh-CN' && v.name.includes('Yaoyao'));
+      if (!voice) voice = voices.find(v => v.lang === 'zh-CN' && v.name.includes('Huihui'));
+      if (!voice) voice = voices.find(v => v.lang === 'zh-CN');
+      if (!voice) voice = voices.find(v => v.lang.startsWith('zh'));
+      if (voice) voiceRef.current = voice;
+    };
+
+    loadVoices();
+    synthRef.current.onvoiceschanged = loadVoices;
+  }, []);
+
+  // 启动动画
   useEffect(() => {
     let i = 0;
     const timer = setInterval(() => {
@@ -103,7 +138,7 @@ export default function Home() {
     return () => clearInterval(timer);
   }, []);
 
-  // 随机毛刺效果
+  // 随机毛刺
   useEffect(() => {
     const trigger = () => {
       setGlitchTrigger(true);
@@ -125,6 +160,67 @@ export default function Home() {
       return () => document.removeEventListener('mousedown', handler);
     }
   }, [showStickers]);
+
+  // === TTS 朗读 ===
+  const speakText = useCallback((text: string) => {
+    const synth = synthRef.current;
+    if (!synth) return;
+    synth.cancel();
+
+    // 去掉 markdown 符号，纯口语化
+    const clean = text
+      .replace(/[*_~`#>|]/g, '')
+      .replace(/\[.*?\]\(.*?\)/g, '')
+      .replace(/\n+/g, '，')
+      .trim();
+
+    if (!clean) return;
+
+    const utterance = new SpeechSynthesisUtterance(clean);
+    utterance.lang = 'zh-CN';
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    if (voiceRef.current) utterance.voice = voiceRef.current;
+
+    utterance.onstart = () => {
+      if (callModeRef.current) setCallState('speaking');
+    };
+    utterance.onend = () => {
+      // 说完后自动继续听
+      if (callModeRef.current) {
+        setTimeout(() => startCallListening(), 400);
+      } else {
+        setCallState('idle');
+      }
+    };
+    utterance.onerror = () => {
+      if (callModeRef.current) {
+        setTimeout(() => startCallListening(), 400);
+      } else {
+        setCallState('idle');
+      }
+    };
+
+    synth.speak(utterance);
+  }, []);
+
+  // === 通话模式：开始监听 ===
+  const startCallListening = useCallback(() => {
+    const rec = recognitionRef.current;
+    if (!rec || !callModeRef.current) return;
+    try {
+      setCallState('listening');
+      rec.start();
+    } catch {}
+  }, []);
+
+  // === 通话模式：停止监听 ===
+  const stopCallListening = useCallback(() => {
+    const rec = recognitionRef.current;
+    if (rec) {
+      try { rec.stop(); } catch {}
+    }
+  }, []);
 
   // 初始化语音识别
   useEffect(() => {
@@ -152,9 +248,18 @@ export default function Home() {
         }
       }
       const text = final || interim;
-      setInput(text);
-      if (final.trim()) {
-        doSend(final.trim());
+      if (callModeRef.current) {
+        // 通话模式：不填输入框
+        if (final.trim()) {
+          setCallState('thinking');
+          doSendCall(final.trim());
+        }
+      } else {
+        // 文本模式
+        setInput(text);
+        if (final.trim()) {
+          doSend(final.trim());
+        }
       }
     };
 
@@ -164,6 +269,9 @@ export default function Home() {
         alert('麦克风权限被拒绝了，请在浏览器设置中允许访问麦克风');
       }
       setListening(false);
+      if (callModeRef.current) {
+        setCallState('idle');
+      }
     };
 
     recognition.onend = () => {
@@ -173,6 +281,7 @@ export default function Home() {
     recognitionRef.current = recognition;
   }, []);
 
+  // === 通用发送逻辑 ===
   const doSend = useCallback(async (text: string) => {
     if (!text || loadingRef.current) return;
     setInput('');
@@ -188,9 +297,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: currentMessages
-            .concat(userMsg)
-            .map((m) => ({ role: m.role, content: m.content })),
+          messages: currentMessages.concat(userMsg).map((m) => ({ role: m.role, content: m.content })),
         }),
       });
 
@@ -219,10 +326,7 @@ export default function Home() {
                 fullContent += parsed.text;
                 setMessages((prev) => {
                   const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: fullContent,
-                  };
+                  updated[updated.length - 1] = { role: 'assistant', content: fullContent };
                   return updated;
                 });
               }
@@ -230,24 +334,18 @@ export default function Home() {
           }
         }
       }
+      lastResponseRef.current = fullContent;
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: '淦 信号不太好 你再说一遍',
-        },
-      ]);
+      setMessages((prev) => [...prev, { role: 'assistant', content: '淦 信号不太好 你再说一遍' }]);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  const sendMessage = async () => {
-    const text = input.trim();
-    if (!text || loading) return;
+  // === 通话模式发送（发送完自动朗读） ===
+  const doSendCall = useCallback(async (text: string) => {
+    if (!text || loadingRef.current) return;
 
-    setInput('');
     const currentMessages = messagesRef.current;
     const userMsg: Message = { role: 'user', content: text };
 
@@ -259,9 +357,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: currentMessages
-            .concat(userMsg)
-            .map((m) => ({ role: m.role, content: m.content })),
+          messages: currentMessages.concat(userMsg).map((m) => ({ role: m.role, content: m.content })),
         }),
       });
 
@@ -290,10 +386,7 @@ export default function Home() {
                 fullContent += parsed.text;
                 setMessages((prev) => {
                   const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: fullContent,
-                  };
+                  updated[updated.length - 1] = { role: 'assistant', content: fullContent };
                   return updated;
                 });
               }
@@ -301,29 +394,60 @@ export default function Home() {
           }
         }
       }
+      lastResponseRef.current = fullContent;
+      // AI 回复完，TTS 朗读
+      if (callModeRef.current && fullContent) {
+        speakText(fullContent);
+      }
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: '>[ERROR] 信号丢失... 你再说一遍',
-        },
-      ]);
+      setMessages((prev) => [...prev, { role: 'assistant', content: '淦 信号不太好 你再说一遍' }]);
+      if (callModeRef.current) {
+        setCallState('idle');
+      }
     } finally {
       setLoading(false);
     }
+  }, [speakText]);
+
+  const sendMessage = async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+    doSend(text);
   };
 
-  const toggleListening = useCallback(() => {
-    const recognition = recognitionRef.current;
-    if (!recognition) return;
+  // === 进入/退出通话模式 ===
+  const enterCallMode = useCallback(() => {
+    const rec = recognitionRef.current;
+    if (!rec) {
+      alert('当前浏览器不支持语音识别，请用 Chrome 或 Edge');
+      return;
+    }
+    setCallMode(true);
+    callModeRef.current = true;
+    // 先停止任何正在进行的 TTS
+    synthRef.current?.cancel();
+    setCallState('idle');
+    // 马上开始听
+    setTimeout(() => startCallListening(), 300);
+  }, [startCallListening]);
 
+  const exitCallMode = useCallback(() => {
+    setCallMode(false);
+    callModeRef.current = false;
+    setCallState('idle');
+    stopCallListening();
+    synthRef.current?.cancel();
+  }, [stopCallListening]);
+
+  const toggleListening = useCallback(() => {
+    const rec = recognitionRef.current;
+    if (!rec) return;
     if (listening) {
-      recognition.stop();
+      rec.stop();
       setListening(false);
     } else {
       try {
-        recognition.start();
+        rec.start();
         setListening(true);
       } catch {}
     }
@@ -338,7 +462,6 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-dvh max-w-2xl mx-auto relative">
-      {/* 扫描线悬停效果 - hover任何消息时触发 */}
       <style>{`
         .msg-bubble:hover::before {
           content: '';
@@ -355,33 +478,37 @@ export default function Home() {
           0% { top: -2px; }
           100% { top: 100%; }
         }
-        .cyber-card {
-          background: var(--bg-elevated);
-          border: 1px solid rgba(0, 255, 245, 0.15);
-          box-shadow: 0 0 10px rgba(0, 255, 245, 0.05), inset 0 0 20px rgba(0, 255, 245, 0.02);
+        @keyframes callPulse {
+          0%, 100% { box-shadow: 0 0 10px rgba(0,255,245,0.3), 0 0 30px rgba(0,255,245,0.1); }
+          50% { box-shadow: 0 0 20px rgba(0,255,245,0.6), 0 0 50px rgba(0,255,245,0.25); }
         }
-        .neon-border-cyan {
-          border-color: var(--neon-cyan);
-          box-shadow: 0 0 6px var(--neon-cyan), 0 0 12px rgba(0, 255, 245, 0.2);
+        @keyframes callRing {
+          0% { transform: scale(0.9); opacity: 0.7; }
+          50% { transform: scale(1.05); opacity: 1; }
+          100% { transform: scale(0.9); opacity: 0.7; }
         }
-        .neon-border-magenta {
-          border-color: var(--neon-magenta);
-          box-shadow: 0 0 6px var(--neon-magenta), 0 0 12px rgba(255, 0, 255, 0.2);
+        @keyframes equalizer {
+          0%, 100% { height: 4px; }
+          25% { height: 16px; }
+          50% { height: 8px; }
+          75% { height: 20px; }
         }
       `}</style>
 
       {/* Header */}
       <header className="relative flex items-center gap-3 px-4 py-3 border-b border-[#00fff5]/20 bg-[#0c0c1a]/95 backdrop-blur sticky top-0 z-10">
-        {/* 角落装饰 */}
         <div className="absolute top-0 left-0 w-3 h-[1px] bg-[#00fff5] shadow-[0_0_6px_#00fff5]" />
         <div className="absolute top-0 left-0 w-[1px] h-3 bg-[#00fff5] shadow-[0_0_6px_#00fff5]" />
         <div className="absolute top-0 right-0 w-3 h-[1px] bg-[#ff00ff] shadow-[0_0_6px_#ff00ff]" />
         <div className="absolute top-0 right-0 w-[1px] h-3 bg-[#ff00ff] shadow-[0_0_6px_#ff00ff]" />
 
         <div
-          className={`relative w-10 h-10 rounded-lg bg-black border border-[#00fff5]/50 flex items-center justify-center text-lg flex-shrink-0 overflow-hidden`}
+          className="relative w-10 h-10 rounded-lg bg-black border border-[#00fff5]/50 flex items-center justify-center text-lg flex-shrink-0 overflow-hidden"
           style={{
-            boxShadow: '0 0 10px rgba(0,255,245,0.4), 0 0 20px rgba(0,255,245,0.15), inset 0 0 10px rgba(0,255,245,0.1)',
+            boxShadow: callMode
+              ? '0 0 16px rgba(0,255,245,0.6), 0 0 30px rgba(0,255,245,0.2), inset 0 0 10px rgba(0,255,245,0.1)'
+              : '0 0 10px rgba(0,255,245,0.4), 0 0 20px rgba(0,255,245,0.15), inset 0 0 10px rgba(0,255,245,0.1)',
+            animation: callMode ? 'callPulse 2s ease-in-out infinite' : 'none',
           }}
         >
           <span style={glitchTrigger ? { animation: 'glitch 0.2s ease' } : {}}>😈</span>
@@ -396,19 +523,50 @@ export default function Home() {
               animation: glitchTrigger ? 'glitchText 0.3s ease' : 'none',
             }}
           >
-            坑爹_///synth
+            {callMode ? '坑爹_CALL///' : '坑爹_///synth'}
           </h1>
           <p className="text-xs truncate" style={{ color: '#6b7a8d', fontFamily: "'Courier New', monospace" }}>
-            {bootText}
+            {callMode ? `📞 ${CALL_STATUS_TEXT[callState]}` : bootText}
           </p>
         </div>
+
+        {/* 语音通话按钮 */}
+        {!callMode ? (
+          <button
+            onClick={enterCallMode}
+            disabled={!voiceSupported || loading}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border font-mono tracking-wider transition-all hover:scale-105 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed"
+            style={{
+              borderColor: 'rgba(0,255,245,0.5)',
+              color: '#00fff5',
+              background: 'rgba(0,255,245,0.08)',
+              boxShadow: '0 0 8px rgba(0,255,245,0.2)',
+            }}
+            title="语音通话"
+          >
+            📞 通话
+          </button>
+        ) : (
+          <button
+            onClick={exitCallMode}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border font-mono tracking-wider transition-all hover:scale-105 active:scale-95"
+            style={{
+              borderColor: 'rgba(255,0,0,0.5)',
+              color: '#ff4444',
+              background: 'rgba(255,0,0,0.08)',
+              boxShadow: '0 0 8px rgba(255,0,0,0.2)',
+            }}
+          >
+            ❌ 挂断
+          </button>
+        )}
 
         <span
           className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border text-[#39ff14] border-[#39ff14]/40 bg-[#39ff14]/5"
           style={{ animation: 'statusPulse 2s ease-in-out infinite' }}
         >
           <span className="w-1.5 h-1.5 rounded-full bg-[#39ff14] shadow-[0_0_6px_#39ff14]" />
-          ONLINE
+          {callMode ? 'CALL' : 'ONLINE'}
         </span>
       </header>
 
@@ -432,9 +590,7 @@ export default function Home() {
             )}
             <div
               className={`msg-bubble relative max-w-[80%] px-4 py-2.5 rounded text-sm leading-relaxed whitespace-pre-wrap break-words ${
-                msg.role === 'user'
-                  ? 'rounded-tr-none'
-                  : 'rounded-tl-none'
+                msg.role === 'user' ? 'rounded-tr-none' : 'rounded-tl-none'
               }`}
               style={
                 msg.role === 'user'
@@ -452,7 +608,6 @@ export default function Home() {
                     }
               }
             >
-              {/* 纯表情/sticker 消息放大显示 */}
               {/^[\u{1F600}-\u{1F9FF}\u{2600}-\u{27BF}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{200D}\u{FE0F}\s⚡▓▒░✓⚠️️🌐]+$/u.test(msg.content.trim()) || /^(>|\|).+/.test(msg.content.trim()) ? (
                 <span className="text-3xl leading-normal">{msg.content}</span>
               ) : (
@@ -485,196 +640,239 @@ export default function Home() {
         <div ref={bottomRef} />
       </main>
 
-      {/* Input */}
-      <footer className="relative px-4 py-3 border-t border-[#00fff5]/20 bg-[#0c0c1a]/95 backdrop-blur sticky bottom-0">
-        {/* 角落装饰 */}
-        <div className="absolute bottom-0 left-0 w-3 h-[1px] bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
-        <div className="absolute bottom-0 left-0 w-[1px] h-3 bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
+      {/* 通话模式 UI */}
+      {callMode && (
+        <div
+          className="flex items-center justify-center gap-4 px-4 py-4 border-t border-[#00fff5]/20 bg-[#0c0c1a]/95"
+          style={{ animation: 'callPulse 2s ease-in-out infinite' }}
+        >
+          {/* 均衡器动画 */}
+          <div className="flex items-end gap-0.5 h-8">
+            {[0, 1, 2, 3, 4, 5, 6, 7].map((n) => (
+              <span
+                key={n}
+                className="w-1 rounded-full bg-[#00fff5]"
+                style={{
+                  animation: `equalizer ${0.4 + n * 0.12}s ease-in-out infinite`,
+                  animationDelay: `${n * 0.1}s`,
+                }}
+              />
+            ))}
+          </div>
 
-        {/* 表情包面板 */}
-        {showStickers && (
-          <div
-            ref={stickerPanelRef}
-            className="absolute bottom-full left-0 right-0 mb-2 mx-4 rounded-lg overflow-hidden border"
-            style={{
-              background: '#0c0c1a',
-              borderColor: 'rgba(0,255,245,0.3)',
-              boxShadow: '0 0 20px rgba(0,255,245,0.15), 0 -4px 20px rgba(0,0,0,0.8)',
-            }}
-          >
-            {/* 标签栏 */}
-            <div className="flex border-b" style={{ borderColor: 'rgba(0,255,245,0.2)' }}>
-              {(['emoji', 'meme', 'cyber'] as const).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setStickerTab(tab)}
-                  className="flex-1 py-2 text-xs font-mono tracking-wider transition-all uppercase"
-                  style={{
-                    color: stickerTab === tab ? '#00fff5' : '#6b7a8d',
-                    background: stickerTab === tab ? 'rgba(0,255,245,0.08)' : 'transparent',
-                    borderBottom: stickerTab === tab ? '1px solid #00fff5' : '1px solid transparent',
-                    textShadow: stickerTab === tab ? '0 0 6px #00fff5' : 'none',
-                  }}
-                >
-                  {tab === 'emoji' ? '😎 Emoji' : tab === 'meme' ? '📢 梗图' : '⚡ 赛博'}
-                </button>
-              ))}
-            </div>
-
-            {/* 表情网格 */}
+          <div className="text-center">
             <div
-              className="p-3 overflow-y-auto"
-              style={{ maxHeight: '200px' }}
+              className="text-sm font-mono tracking-widest uppercase"
+              style={{ color: '#00fff5', textShadow: '0 0 10px #00fff5' }}
             >
-              {stickerTab === 'emoji' && (
-                <div className="grid grid-cols-8 gap-2">
-                  {EMOJI_STICKERS.map((emoji, i) => (
-                    <button
-                      key={i}
-                      onClick={() => { doSend(emoji); setShowStickers(false); }}
-                      className="text-2xl p-1.5 rounded hover:scale-125 transition-transform active:scale-90"
-                      style={{ background: 'rgba(0,255,245,0.05)' }}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {stickerTab === 'meme' && (
-                <div className="grid grid-cols-3 gap-2">
-                  {MEME_STICKERS.map((s, i) => (
-                    <button
-                      key={i}
-                      onClick={() => { doSend(s.content); setShowStickers(false); }}
-                      className="p-2 rounded text-xs font-mono text-center border transition-all hover:scale-105 active:scale-95 truncate"
-                      style={{
-                        borderColor: 'rgba(255,0,255,0.3)',
-                        color: '#ff00ff',
-                        background: 'rgba(255,0,255,0.05)',
-                        textShadow: '0 0 4px rgba(255,0,255,0.5)',
-                      }}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {stickerTab === 'cyber' && (
-                <div className="grid grid-cols-2 gap-2">
-                  {CYBER_STICKERS.map((s, i) => (
-                    <button
-                      key={i}
-                      onClick={() => { doSend(s.content); setShowStickers(false); }}
-                      className="p-2 rounded text-xs font-mono text-center border transition-all hover:scale-105 active:scale-95"
-                      style={{
-                        borderColor: 'rgba(0,255,245,0.3)',
-                        color: '#00fff5',
-                        background: 'rgba(0,255,245,0.05)',
-                        textShadow: '0 0 4px rgba(0,255,245,0.5)',
-                      }}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              )}
+              {callState === 'listening' && '🎙️ 我在听...'}
+              {callState === 'thinking' && '🤔 思考中...'}
+              {callState === 'speaking' && '🔊 说话中...'}
+              {callState === 'idle' && '📞 通话中'}
+            </div>
+            <div className="text-xs mt-1" style={{ color: '#6b7a8d' }}>
+              {callState === 'listening' && '请说话'}
+              {callState === 'thinking' && '稍等'}
+              {callState === 'speaking' && '坑爹正在回复你'}
+              {callState === 'idle' && '准备中...'}
             </div>
           </div>
-        )}
 
-        <div className="flex gap-2 items-center">
-          {/* 表情包按钮 */}
           <button
-            onClick={() => setShowStickers(!showStickers)}
-            disabled={loading}
-            className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center text-lg transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border bg-black"
+            onClick={exitCallMode}
+            className="w-12 h-12 rounded-full flex items-center justify-center text-xl border transition-all active:scale-90"
             style={{
-              borderColor: showStickers ? '#ffd600' : 'rgba(0,255,245,0.3)',
-              boxShadow: showStickers ? '0 0 12px rgba(255,214,0,0.4)' : 'none',
-              color: showStickers ? '#ffd600' : '#6b7a8d',
-            }}
-            title="表情包"
-          >
-            😎
-          </button>
-          {/* 麦克风按钮 */}
-          {voiceSupported && (
-            <button
-              onClick={toggleListening}
-              disabled={loading}
-              className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center text-lg transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border bg-black"
-              style={
-                listening
-                  ? {
-                      borderColor: '#ff00ff',
-                      boxShadow: '0 0 16px rgba(255,0,255,0.6), 0 0 32px rgba(255,0,255,0.2)',
-                      animation: 'neonFlicker 1.8s ease-in-out infinite',
-                    }
-                  : {
-                      borderColor: 'rgba(0,255,245,0.3)',
-                      color: '#6b7a8d',
-                    }
-              }
-              title={listening ? '点击停止' : '语音输入'}
-            >
-              {listening ? '🎙️' : '🎤'}
-            </button>
-          )}
-          <div className="flex-1 relative">
-            <span
-              className="absolute left-4 top-1/2 -translate-y-1/2 text-sm select-none pointer-events-none z-10"
-              style={{ color: '#00fff5', opacity: 0.6 }}
-            >
-              &gt;
-            </span>
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={listening ? '正在监听...' : voiceSupported ? '输入指令 或点击🎤...' : '输入指令...'}
-              disabled={loading}
-              className="w-full pl-8 pr-4 py-2.5 rounded-lg text-sm placeholder-[#6b7a8d]/50 focus:outline-none transition-all disabled:opacity-40 font-mono bg-black border text-[#00fff5]"
-              style={{
-                borderColor: listening ? '#ff00ff' : 'rgba(0,255,245,0.3)',
-                boxShadow: listening
-                  ? '0 0 10px rgba(255,0,255,0.3), inset 0 0 10px rgba(255,0,255,0.05)'
-                  : 'inset 0 0 10px rgba(0,255,245,0.03)',
-              }}
-              autoFocus
-            />
-          </div>
-          <button
-            onClick={sendMessage}
-            disabled={loading || !input.trim()}
-            className="flex-shrink-0 px-5 py-2.5 rounded-lg text-sm font-bold tracking-wider transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border uppercase"
-            style={{
-              background: 'rgba(255,0,255,0.1)',
-              borderColor: 'rgba(255,0,255,0.4)',
-              color: '#ff00ff',
-              boxShadow: input.trim() ? '0 0 10px rgba(255,0,255,0.3)' : 'none',
+              background: 'rgba(255,0,0,0.1)',
+              borderColor: 'rgba(255,0,0,0.4)',
+              boxShadow: '0 0 12px rgba(255,0,0,0.2)',
             }}
           >
-            {loading ? '...' : 'SEND'}
+            📞
           </button>
         </div>
-        {listening && (
-          <div className="flex items-center gap-2 mt-2 px-1">
-            <span className="flex gap-0.5">
-              <span className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff] animate-[wave_0.8s_ease-in-out_infinite]" />
-              <span className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff] animate-[wave_0.8s_ease-in-out_0.15s_infinite]" />
-              <span className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff] animate-[wave_0.8s_ease-in-out_0.3s_infinite]" />
-              <span className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff] animate-[wave_0.8s_ease-in-out_0.45s_infinite]" />
-            </span>
-            <span className="text-xs font-mono tracking-wider" style={{ color: '#ff00ff', textShadow: '0 0 6px #ff00ff' }}>
-              [RECORDING...]
-            </span>
+      )}
+
+      {/* Input — 通话模式隐藏 */}
+      {!callMode && (
+        <footer className="relative px-4 py-3 border-t border-[#00fff5]/20 bg-[#0c0c1a]/95 backdrop-blur sticky bottom-0">
+          <div className="absolute bottom-0 left-0 w-3 h-[1px] bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
+          <div className="absolute bottom-0 left-0 w-[1px] h-3 bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
+
+          {/* 表情包面板 */}
+          {showStickers && (
+            <div
+              ref={stickerPanelRef}
+              className="absolute bottom-full left-0 right-0 mb-2 mx-4 rounded-lg overflow-hidden border"
+              style={{
+                background: '#0c0c1a',
+                borderColor: 'rgba(0,255,245,0.3)',
+                boxShadow: '0 0 20px rgba(0,255,245,0.15), 0 -4px 20px rgba(0,0,0,0.8)',
+              }}
+            >
+              <div className="flex border-b" style={{ borderColor: 'rgba(0,255,245,0.2)' }}>
+                {(['emoji', 'meme', 'cyber'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setStickerTab(tab)}
+                    className="flex-1 py-2 text-xs font-mono tracking-wider transition-all uppercase"
+                    style={{
+                      color: stickerTab === tab ? '#00fff5' : '#6b7a8d',
+                      background: stickerTab === tab ? 'rgba(0,255,245,0.08)' : 'transparent',
+                      borderBottom: stickerTab === tab ? '1px solid #00fff5' : '1px solid transparent',
+                      textShadow: stickerTab === tab ? '0 0 6px #00fff5' : 'none',
+                    }}
+                  >
+                    {tab === 'emoji' ? '😎 Emoji' : tab === 'meme' ? '📢 梗图' : '⚡ 赛博'}
+                  </button>
+                ))}
+              </div>
+              <div className="p-3 overflow-y-auto" style={{ maxHeight: '200px' }}>
+                {stickerTab === 'emoji' && (
+                  <div className="grid grid-cols-8 gap-2">
+                    {EMOJI_STICKERS.map((emoji, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { doSend(emoji); setShowStickers(false); }}
+                        className="text-2xl p-1.5 rounded hover:scale-125 transition-transform active:scale-90"
+                        style={{ background: 'rgba(0,255,245,0.05)' }}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {stickerTab === 'meme' && (
+                  <div className="grid grid-cols-3 gap-2">
+                    {MEME_STICKERS.map((s, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { doSend(s.content); setShowStickers(false); }}
+                        className="p-2 rounded text-xs font-mono text-center border transition-all hover:scale-105 active:scale-95 truncate"
+                        style={{
+                          borderColor: 'rgba(255,0,255,0.3)',
+                          color: '#ff00ff',
+                          background: 'rgba(255,0,255,0.05)',
+                          textShadow: '0 0 4px rgba(255,0,255,0.5)',
+                        }}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {stickerTab === 'cyber' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    {CYBER_STICKERS.map((s, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { doSend(s.content); setShowStickers(false); }}
+                        className="p-2 rounded text-xs font-mono text-center border transition-all hover:scale-105 active:scale-95"
+                        style={{
+                          borderColor: 'rgba(0,255,245,0.3)',
+                          color: '#00fff5',
+                          background: 'rgba(0,255,245,0.05)',
+                          textShadow: '0 0 4px rgba(0,255,245,0.5)',
+                        }}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="flex gap-2 items-center">
+            <button
+              onClick={() => setShowStickers(!showStickers)}
+              disabled={loading}
+              className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center text-lg transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border bg-black"
+              style={{
+                borderColor: showStickers ? '#ffd600' : 'rgba(0,255,245,0.3)',
+                boxShadow: showStickers ? '0 0 12px rgba(255,214,0,0.4)' : 'none',
+                color: showStickers ? '#ffd600' : '#6b7a8d',
+              }}
+              title="表情包"
+            >
+              😎
+            </button>
+            {voiceSupported && (
+              <button
+                onClick={toggleListening}
+                disabled={loading}
+                className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center text-lg transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border bg-black"
+                style={
+                  listening
+                    ? {
+                        borderColor: '#ff00ff',
+                        boxShadow: '0 0 16px rgba(255,0,255,0.6)',
+                        animation: 'neonFlicker 1.8s ease-in-out infinite',
+                      }
+                    : { borderColor: 'rgba(0,255,245,0.3)', color: '#6b7a8d' }
+                }
+                title={listening ? '点击停止' : '语音输入'}
+              >
+                {listening ? '🎙️' : '🎤'}
+              </button>
+            )}
+            <div className="flex-1 relative">
+              <span
+                className="absolute left-4 top-1/2 -translate-y-1/2 text-sm select-none pointer-events-none z-10"
+                style={{ color: '#00fff5', opacity: 0.6 }}
+              >
+                &gt;
+              </span>
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={listening ? '正在监听...' : voiceSupported ? '输入指令 或点击🎤...' : '输入指令...'}
+                disabled={loading}
+                className="w-full pl-8 pr-4 py-2.5 rounded-lg text-sm placeholder-[#6b7a8d]/50 focus:outline-none transition-all disabled:opacity-40 font-mono bg-black border text-[#00fff5]"
+                style={{
+                  borderColor: listening ? '#ff00ff' : 'rgba(0,255,245,0.3)',
+                  boxShadow: listening
+                    ? '0 0 10px rgba(255,0,255,0.3), inset 0 0 10px rgba(255,0,255,0.05)'
+                    : 'inset 0 0 10px rgba(0,255,245,0.03)',
+                }}
+                autoFocus
+              />
+            </div>
+            <button
+              onClick={sendMessage}
+              disabled={loading || !input.trim()}
+              className="flex-shrink-0 px-5 py-2.5 rounded-lg text-sm font-bold tracking-wider transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border uppercase"
+              style={{
+                background: 'rgba(255,0,255,0.1)',
+                borderColor: 'rgba(255,0,255,0.4)',
+                color: '#ff00ff',
+                boxShadow: input.trim() ? '0 0 10px rgba(255,0,255,0.3)' : 'none',
+              }}
+            >
+              {loading ? '...' : 'SEND'}
+            </button>
           </div>
-        )}
-      </footer>
+          {listening && (
+            <div className="flex items-center gap-2 mt-2 px-1">
+              <span className="flex gap-0.5">
+                {[0, 1, 2, 3].map((n) => (
+                  <span
+                    key={n}
+                    className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff]"
+                    style={{ animation: `wave 0.8s ease-in-out ${n * 0.15}s infinite` }}
+                  />
+                ))}
+              </span>
+              <span className="text-xs font-mono tracking-wider" style={{ color: '#ff00ff', textShadow: '0 0 6px #ff00ff' }}>
+                [RECORDING...]
+              </span>
+            </div>
+          )}
+        </footer>
+      )}
     </div>
   );
 }
