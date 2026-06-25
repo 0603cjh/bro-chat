@@ -2,10 +2,10 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '坑爹 — 思维操作系统',
+  title: '赛博坑爹',
   description: '嘻嘻，好爽啊。一个写嵌入式代码的矛盾体，没办法。',
   openGraph: {
-    title: '坑爹 — 思维操作系统',
+    title: '赛博坑爹',
     description: '嘻嘻，好爽啊。一个写嵌入式代码的矛盾体，没办法。',
     type: 'website',
   },
