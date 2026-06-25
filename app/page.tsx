@@ -27,6 +27,38 @@ const HACKER_PHRASES = [
   '> 数据流同步中...',
 ];
 
+// 表情包数据
+const EMOJI_STICKERS = [
+  '😂', '🤣', '😭', '🥰', '😍', '🤪', '😎', '🤯',
+  '💀', '👻', '🤡', '👀', '🙏', '💪', '🤝', '🫡',
+  '🔥', '💯', '🎉', '💩', '😈', '🍺', '🚬', '💊',
+  '🐶', '🐱', '🐸', '🦀', '🤖', '👾', '🎮', '💻',
+];
+
+const MEME_STICKERS: { label: string; content: string }[] = [
+  { label: '嘻嘻好爽', content: '嘻嘻，好爽啊 😈' },
+  { label: '没办法', content: '没办法 🤷' },
+  { label: '玉玉了', content: '不要喷我了，玉玉了 🥺' },
+  { label: '下把c', content: '我的问题，下把c 💪' },
+  { label: '玩原玩的', content: '玩原神玩的 🤣' },
+  { label: '本质黄铜', content: '本质黄铜罢了 🐸' },
+  { label: '砖石操作', content: '你们理解不来砖石的操作的 🔥' },
+  { label: '好爽啊', content: '好爽啊～～～ 🎉' },
+  { label: '溜了溜了', content: '🏃‍♂️💨 溜了溜了' },
+  { label: '别急', content: '别急 🧘' },
+  { label: '开摆', content: '开摆！🎮💤' },
+  { label: '6', content: '6' },
+];
+
+const CYBER_STICKERS: { label: string; content: string }[] = [
+  { label: '黑客', content: '⚡ ACCESS_GRANTED ⚡' },
+  { label: '数据流', content: '01001010110 🌐' },
+  { label: '电路', content: '▓▓▒▒░░ NEURAL_LINK ░░▒▒▓▓' },
+  { label: '赛博', content: '🤖 CYBER_PUNK_2077 🤖' },
+  { label: '系统', content: '> SYSTEM_OVERRIDE\n> DONE ✓' },
+  { label: '故障', content: '⚠️ GLITCH_DETECTED ⚠️' },
+];
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -40,8 +72,11 @@ export default function Home() {
   const [voiceSupported, setVoiceSupported] = useState(true);
   const [bootText, setBootText] = useState(HACKER_PHRASES[0]);
   const [glitchTrigger, setGlitchTrigger] = useState(false);
+  const [showStickers, setShowStickers] = useState(false);
+  const [stickerTab, setStickerTab] = useState<'emoji' | 'meme' | 'cyber'>('emoji');
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const stickerPanelRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const messagesRef = useRef(messages);
   const loadingRef = useRef(loading);
@@ -77,6 +112,19 @@ export default function Home() {
     const timer = setInterval(trigger, 8000 + Math.random() * 12000);
     return () => clearInterval(timer);
   }, []);
+
+  // 点击面板外关闭
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (stickerPanelRef.current && !stickerPanelRef.current.contains(e.target as Node)) {
+        setShowStickers(false);
+      }
+    };
+    if (showStickers) {
+      document.addEventListener('mousedown', handler);
+      return () => document.removeEventListener('mousedown', handler);
+    }
+  }, [showStickers]);
 
   // 初始化语音识别
   useEffect(() => {
@@ -404,7 +452,12 @@ export default function Home() {
                     }
               }
             >
-              {msg.content}
+              {/* 纯表情/sticker 消息放大显示 */}
+              {/^[\u{1F600}-\u{1F9FF}\u{2600}-\u{27BF}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{200D}\u{FE0F}\s⚡▓▒░✓⚠️️🌐]+$/u.test(msg.content.trim()) || /^(>|\|).+/.test(msg.content.trim()) ? (
+                <span className="text-3xl leading-normal">{msg.content}</span>
+              ) : (
+                msg.content
+              )}
               {msg.role === 'assistant' && i === messages.length - 1 && loading && (
                 <span
                   className="inline-block w-1.5 h-4 ml-1 rounded-sm align-middle"
@@ -433,12 +486,119 @@ export default function Home() {
       </main>
 
       {/* Input */}
-      <footer className="px-4 py-3 border-t border-[#00fff5]/20 bg-[#0c0c1a]/95 backdrop-blur sticky bottom-0">
+      <footer className="relative px-4 py-3 border-t border-[#00fff5]/20 bg-[#0c0c1a]/95 backdrop-blur sticky bottom-0">
         {/* 角落装饰 */}
         <div className="absolute bottom-0 left-0 w-3 h-[1px] bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
         <div className="absolute bottom-0 left-0 w-[1px] h-3 bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
 
+        {/* 表情包面板 */}
+        {showStickers && (
+          <div
+            ref={stickerPanelRef}
+            className="absolute bottom-full left-0 right-0 mb-2 mx-4 rounded-lg overflow-hidden border"
+            style={{
+              background: '#0c0c1a',
+              borderColor: 'rgba(0,255,245,0.3)',
+              boxShadow: '0 0 20px rgba(0,255,245,0.15), 0 -4px 20px rgba(0,0,0,0.8)',
+            }}
+          >
+            {/* 标签栏 */}
+            <div className="flex border-b" style={{ borderColor: 'rgba(0,255,245,0.2)' }}>
+              {(['emoji', 'meme', 'cyber'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setStickerTab(tab)}
+                  className="flex-1 py-2 text-xs font-mono tracking-wider transition-all uppercase"
+                  style={{
+                    color: stickerTab === tab ? '#00fff5' : '#6b7a8d',
+                    background: stickerTab === tab ? 'rgba(0,255,245,0.08)' : 'transparent',
+                    borderBottom: stickerTab === tab ? '1px solid #00fff5' : '1px solid transparent',
+                    textShadow: stickerTab === tab ? '0 0 6px #00fff5' : 'none',
+                  }}
+                >
+                  {tab === 'emoji' ? '😎 Emoji' : tab === 'meme' ? '📢 梗图' : '⚡ 赛博'}
+                </button>
+              ))}
+            </div>
+
+            {/* 表情网格 */}
+            <div
+              className="p-3 overflow-y-auto"
+              style={{ maxHeight: '200px' }}
+            >
+              {stickerTab === 'emoji' && (
+                <div className="grid grid-cols-8 gap-2">
+                  {EMOJI_STICKERS.map((emoji, i) => (
+                    <button
+                      key={i}
+                      onClick={() => { doSend(emoji); setShowStickers(false); }}
+                      className="text-2xl p-1.5 rounded hover:scale-125 transition-transform active:scale-90"
+                      style={{ background: 'rgba(0,255,245,0.05)' }}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {stickerTab === 'meme' && (
+                <div className="grid grid-cols-3 gap-2">
+                  {MEME_STICKERS.map((s, i) => (
+                    <button
+                      key={i}
+                      onClick={() => { doSend(s.content); setShowStickers(false); }}
+                      className="p-2 rounded text-xs font-mono text-center border transition-all hover:scale-105 active:scale-95 truncate"
+                      style={{
+                        borderColor: 'rgba(255,0,255,0.3)',
+                        color: '#ff00ff',
+                        background: 'rgba(255,0,255,0.05)',
+                        textShadow: '0 0 4px rgba(255,0,255,0.5)',
+                      }}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {stickerTab === 'cyber' && (
+                <div className="grid grid-cols-2 gap-2">
+                  {CYBER_STICKERS.map((s, i) => (
+                    <button
+                      key={i}
+                      onClick={() => { doSend(s.content); setShowStickers(false); }}
+                      className="p-2 rounded text-xs font-mono text-center border transition-all hover:scale-105 active:scale-95"
+                      style={{
+                        borderColor: 'rgba(0,255,245,0.3)',
+                        color: '#00fff5',
+                        background: 'rgba(0,255,245,0.05)',
+                        textShadow: '0 0 4px rgba(0,255,245,0.5)',
+                      }}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-2 items-center">
+          {/* 表情包按钮 */}
+          <button
+            onClick={() => setShowStickers(!showStickers)}
+            disabled={loading}
+            className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center text-lg transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border bg-black"
+            style={{
+              borderColor: showStickers ? '#ffd600' : 'rgba(0,255,245,0.3)',
+              boxShadow: showStickers ? '0 0 12px rgba(255,214,0,0.4)' : 'none',
+              color: showStickers ? '#ffd600' : '#6b7a8d',
+            }}
+            title="表情包"
+          >
+            😎
+          </button>
           {/* 麦克风按钮 */}
           {voiceSupported && (
             <button
