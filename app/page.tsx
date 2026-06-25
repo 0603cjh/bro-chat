@@ -56,7 +56,11 @@ const CALL_STATUS_TEXT: Record<CallState, string> = {
   speaking: '说话中...',
 };
 
+// Voicebox 本地服务地址
+const VOICEBOX_URL = 'http://127.0.0.1:17493';
+
 export default function Home() {
+  // === Voicebox 检测 ===
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -73,6 +77,8 @@ export default function Home() {
   const [stickerTab, setStickerTab] = useState<'emoji' | 'meme' | 'cyber'>('emoji');
   const [callMode, setCallMode] = useState(false);
   const [callState, setCallState] = useState<CallState>('idle');
+  const [voiceboxAvailable, setVoiceboxAvailable] = useState(false);
+  const [sttMode, setSttMode] = useState<'voicebox' | 'server' | 'browser'>('browser');
   const [ttsSupported, setTtsSupported] = useState(true);
 
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -86,6 +92,8 @@ export default function Home() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const sttBackendRef = useRef<'server' | 'browser'>('server');
+  const browserRecognitionRef = useRef<any>(null);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { loadingRef.current = loading; }, [loading]);
@@ -122,6 +130,23 @@ export default function Home() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setVoiceSupported(false);
     }
+  }, []);
+
+  // 检测本地 Voicebox 服务
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const res = await fetch(`${VOICEBOX_URL}/health`, { signal: AbortSignal.timeout(2000) });
+        if (res.ok) {
+          setVoiceboxAvailable(true);
+          setSttMode('voicebox');
+          console.log('✅ Voicebox 已连接');
+        }
+      } catch {
+        console.log('⚠️ Voicebox 未运行，使用浏览器回退');
+      }
+    };
+    check();
   }, []);
 
   // 启动动画
@@ -230,48 +255,126 @@ export default function Home() {
     }
   }, []);
 
-  // === STT: 发送音频到服务端识别 ===
+  // === STT: Voicebox → 服务端 → 浏览器回退 ===
   const transcribeAudio = async (blob: Blob): Promise<string> => {
-    try {
-      const formData = new FormData();
-      formData.append('audio', blob, 'audio.webm');
-
-      const res = await fetch('/api/stt', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        // 如果没有配置 STT key，回退到 Web Speech API
-        if (err.error?.includes('未配置')) {
-          alert('语音识别需要配置 API key。\n\n免费获取 Groq key: https://console.groq.com\n然后在环境变量中设置 GROQ_API_KEY');
-          return '';
+    // 1) Voicebox 本地 Whisper（最优先）
+    if (voiceboxAvailable) {
+      try {
+        const formData = new FormData();
+        formData.append('audio', blob, 'audio.webm');
+        formData.append('model', 'whisper-turbo');
+        const res = await fetch(`${VOICEBOX_URL}/transcribe`, {
+          method: 'POST',
+          body: formData,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.text) return data.text;
         }
-        throw new Error(err.error || '识别失败');
-      }
-
-      const data = await res.json();
-      return data.text || '';
-    } catch (err: any) {
-      console.error('STT 失败:', err);
-      return '';
+      } catch { /* Voicebox 挂了，继续回退 */ }
     }
+
+    // 2) 服务端 STT
+    if (sttMode === 'server') {
+      try {
+        const formData = new FormData();
+        formData.append('audio', blob, 'audio.webm');
+        const res = await fetch('/api/stt', { method: 'POST', body: formData });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.text) return data.text;
+        }
+        const err = await res.json().catch(() => ({}));
+        if (err.error?.includes('未配置')) {
+          setSttMode('browser');
+        }
+      } catch {
+        setSttMode('browser');
+      }
+    }
+
+    // 3) 浏览器回退
+    if (sttMode === 'browser') {
+      return await transcribeWithBrowser();
+    }
+
+    return '';
   };
 
-  // === TTS 朗读 ===
-  const speakText = useCallback((text: string) => {
-    const synth = synthRef.current;
-    if (!synth) return;
-    synth.cancel();
+  // === 浏览器内置语音识别回退 ===
+  const transcribeWithBrowser = (): Promise<string> => {
+    return new Promise((resolve) => {
+      const SpeechRecognition =
+        (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert('语音识别需要配置 API key，且当前浏览器不支持内置语音识别。\n\n请设置 OPENAI_API_KEY 环境变量，或使用 Chrome 浏览器。\n\n获取 OpenAI key: https://platform.openai.com/api-keys');
+        resolve('');
+        return;
+      }
 
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'zh-CN';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      recognition.onresult = (e: any) => {
+        resolve(e.results[0][0].transcript || '');
+      };
+      recognition.onerror = () => resolve('');
+      recognition.onnomatch = () => resolve('');
+
+      recognition.start();
+      // 超时 5 秒
+      setTimeout(() => {
+        try { recognition.stop(); } catch {}
+        resolve('');
+      }, 5000);
+    });
+  };
+
+  // === TTS 朗读: Voicebox → 浏览器回退 ===
+  const speakText = useCallback((text: string) => {
     const clean = text
       .replace(/[*_~`#>|]/g, '')
       .replace(/\[.*?\]\(.*?\)/g, '')
       .replace(/\n+/g, '，')
       .trim();
-
     if (!clean) return;
+
+    const onDone = () => {
+      if (callModeRef.current) {
+        setTimeout(() => startCallRecording(), 400);
+      } else {
+        setCallState('idle');
+      }
+    };
+
+    // 1) Voicebox TTS
+    if (voiceboxAvailable) {
+      fetch(`${VOICEBOX_URL}/speak`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Voicebox-Client-Id': 'sai-bo-keng-die',
+        },
+        body: JSON.stringify({ text: clean }),
+        signal: AbortSignal.timeout(30000),
+      })
+        .then(() => {
+          if (callModeRef.current) setCallState('speaking');
+          // Voicebox speak 是异步的，大约按文本长度估算时长
+          const estimatedMs = Math.max(2000, clean.length * 200);
+          setTimeout(onDone, estimatedMs);
+        })
+        .catch(onDone);
+      return;
+    }
+
+    // 2) 浏览器 SpeechSynthesis 回退
+    const synth = synthRef.current;
+    if (!synth) { onDone(); return; }
+    synth.cancel();
 
     const utterance = new SpeechSynthesisUtterance(clean);
     utterance.lang = 'zh-CN';
@@ -282,23 +385,11 @@ export default function Home() {
     utterance.onstart = () => {
       if (callModeRef.current) setCallState('speaking');
     };
-    utterance.onend = () => {
-      if (callModeRef.current) {
-        setTimeout(() => startCallRecording(), 400);
-      } else {
-        setCallState('idle');
-      }
-    };
-    utterance.onerror = () => {
-      if (callModeRef.current) {
-        setTimeout(() => startCallRecording(), 400);
-      } else {
-        setCallState('idle');
-      }
-    };
+    utterance.onend = onDone;
+    utterance.onerror = onDone;
 
     synth.speak(utterance);
-  }, []);
+  }, [voiceboxAvailable]);
 
   // === 通话模式录音 ===
   const startCallRecording = useCallback(() => {
@@ -539,7 +630,7 @@ export default function Home() {
             {callMode ? '坑爹_CALL///' : '坑爹_///synth'}
           </h1>
           <p className="text-xs truncate" style={{ color: '#6b7a8d', fontFamily: "'Courier New', monospace" }}>
-            {callMode ? `📞 ${CALL_STATUS_TEXT[callState]}` : bootText}
+            {callMode ? `📞 ${CALL_STATUS_TEXT[callState]}` : voiceboxAvailable ? '⚡ Voicebox 已连接 - 语音就绪' : bootText}
           </p>
         </div>
 
@@ -574,11 +665,21 @@ export default function Home() {
         )}
 
         <span
-          className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border text-[#39ff14] border-[#39ff14]/40 bg-[#39ff14]/5"
-          style={{ animation: 'statusPulse 2s ease-in-out infinite' }}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border bg-[#39ff14]/5"
+          style={{
+            animation: 'statusPulse 2s ease-in-out infinite',
+            borderColor: voiceboxAvailable ? 'rgba(255,214,0,0.5)' : 'rgba(57,255,20,0.4)',
+            color: voiceboxAvailable ? '#ffd600' : '#39ff14',
+          }}
         >
-          <span className="w-1.5 h-1.5 rounded-full bg-[#39ff14] shadow-[0_0_6px_#39ff14]" />
-          {callMode ? 'CALL' : 'ONLINE'}
+          <span
+            className="w-1.5 h-1.5 rounded-full"
+            style={{
+              background: voiceboxAvailable ? '#ffd600' : '#39ff14',
+              boxShadow: voiceboxAvailable ? '0 0 6px #ffd600' : '0 0 6px #39ff14',
+            }}
+          />
+          {callMode ? 'CALL' : voiceboxAvailable ? 'VOICEBOX' : 'ONLINE'}
         </span>
       </header>
 
