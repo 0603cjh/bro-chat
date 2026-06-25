@@ -32,6 +32,19 @@ export default function Home() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
+  // 用 ref 保存最新 messages，避免语音回调里的闭包陷阱
+  const messagesRef = useRef(messages);
+
+  // 每次 messages 更新时同步到 ref
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  // 用 ref 保存 loading 状态
+  const loadingRef = useRef(loading);
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -64,13 +77,9 @@ export default function Home() {
       }
       const text = final || interim;
       setInput(text);
-      // 有最终结果时自动发送
       if (final.trim()) {
-        setInput('');
-        // 用 setTimeout 确保 state 更新后再发送
-        setTimeout(() => {
-          sendMessageWithText(final.trim());
-        }, 100);
+        // 拿到最终文本后发送
+        doSend(final.trim());
       }
     };
 
@@ -87,31 +96,17 @@ export default function Home() {
     };
 
     recognitionRef.current = recognition;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const toggleListening = useCallback(() => {
-    const recognition = recognitionRef.current;
-    if (!recognition) return;
-
-    if (listening) {
-      recognition.stop();
-      setListening(false);
-    } else {
-      try {
-        recognition.start();
-        setListening(true);
-      } catch {
-        // 已经在识别中
-      }
-    }
-  }, [listening]);
-
-  // 带文本参数发送（语音识别回调中使用，避免闭包问题）
-  const sendMessageWithText = async (text: string) => {
-    if (!text || loading) return;
+  // doSend 独立函数，通过 ref 读最新 state，避免闭包陷阱
+  const doSend = useCallback(async (text: string) => {
+    if (!text || loadingRef.current) return;
     setInput('');
 
+    const currentMessages = messagesRef.current;
     const userMsg: Message = { role: 'user', content: text };
+
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
 
@@ -120,7 +115,80 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: messages
+          messages: currentMessages
+            .concat(userMsg)
+            .map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('No reader');
+
+      const decoder = new TextDecoder();
+      let fullContent = '';
+
+      setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.type === 'text') {
+                fullContent += parsed.text;
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  updated[updated.length - 1] = {
+                    role: 'assistant',
+                    content: fullContent,
+                  };
+                  return updated;
+                });
+              }
+            } catch {
+              // 忽略解析错误
+            }
+          }
+        }
+      }
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: '淦 信号不太好 你再说一遍',
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const sendMessage = async () => {
+    const text = input.trim();
+    if (!text || loading) return;
+
+    setInput('');
+    const currentMessages = messagesRef.current;
+    const userMsg: Message = { role: 'user', content: text };
+
+    setMessages((prev) => [...prev, userMsg]);
+    setLoading(true);
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: currentMessages
             .concat(userMsg)
             .map((m) => ({ role: m.role, content: m.content })),
         }),
@@ -177,77 +245,22 @@ export default function Home() {
     }
   };
 
-  const sendMessage = async () => {
-    const text = input.trim();
-    if (!text || loading) return;
+  const toggleListening = useCallback(() => {
+    const recognition = recognitionRef.current;
+    if (!recognition) return;
 
-    const userMsg: Message = { role: 'user', content: text };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput('');
-    setLoading(true);
-
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: messages
-            .concat(userMsg)
-            .map((m) => ({ role: m.role, content: m.content })),
-        }),
-      });
-
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('No reader');
-
-      const decoder = new TextDecoder();
-      let fullContent = '';
-
-      // 添加一个空的 assistant 消息占位
-      setMessages((prev) => [...prev, { role: 'assistant', content: '' }]);
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.type === 'text') {
-                fullContent += parsed.text;
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    role: 'assistant',
-                    content: fullContent,
-                  };
-                  return updated;
-                });
-              }
-            } catch {
-              // 忽略解析错误
-            }
-          }
-        }
+    if (listening) {
+      recognition.stop();
+      setListening(false);
+    } else {
+      try {
+        recognition.start();
+        setListening(true);
+      } catch {
+        // 已经在识别中
       }
-    } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: '淦 信号不太好 你再说一遍',
-        },
-      ]);
-    } finally {
-      setLoading(false);
     }
-  };
+  }, [listening]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
