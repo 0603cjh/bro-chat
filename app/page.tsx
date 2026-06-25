@@ -7,16 +7,6 @@ interface Message {
   content: string;
 }
 
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList;
-  resultIndex: number;
-}
-
-interface SpeechRecognitionError extends Event {
-  error: string;
-  message: string;
-}
-
 type CallState = 'idle' | 'listening' | 'thinking' | 'speaking';
 
 const HACKER_PHRASES = [
@@ -59,7 +49,6 @@ const CYBER_STICKERS: { label: string; content: string }[] = [
   { label: '故障', content: '⚠️ GLITCH_DETECTED ⚠️' },
 ];
 
-// 通话状态文案
 const CALL_STATUS_TEXT: Record<CallState, string> = {
   idle: '待机',
   listening: '正在听...',
@@ -76,7 +65,7 @@ export default function Home() {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [listening, setListening] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(true);
   const [bootText, setBootText] = useState(HACKER_PHRASES[0]);
   const [glitchTrigger, setGlitchTrigger] = useState(false);
@@ -89,13 +78,14 @@ export default function Home() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const stickerPanelRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<any>(null);
   const messagesRef = useRef(messages);
   const loadingRef = useRef(loading);
   const callModeRef = useRef(callMode);
   const synthRef = useRef<SpeechSynthesis | null>(null);
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
-  const lastResponseRef = useRef('');
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { loadingRef.current = loading; }, [loading]);
@@ -115,7 +105,6 @@ export default function Home() {
 
     const loadVoices = () => {
       const voices = synthRef.current!.getVoices();
-      // 优先找中文女声
       let voice = voices.find(v => v.lang === 'zh-CN' && v.name.includes('Xiaoxiao'));
       if (!voice) voice = voices.find(v => v.lang === 'zh-CN' && v.name.includes('Yaoyao'));
       if (!voice) voice = voices.find(v => v.lang === 'zh-CN' && v.name.includes('Huihui'));
@@ -126,6 +115,13 @@ export default function Home() {
 
     loadVoices();
     synthRef.current.onvoiceschanged = loadVoices;
+  }, []);
+
+  // 检查浏览器是否支持录音
+  useEffect(() => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setVoiceSupported(false);
+    }
   }, []);
 
   // 启动动画
@@ -161,13 +157,114 @@ export default function Home() {
     }
   }, [showStickers]);
 
+  // === MediaRecorder 录音 ===
+  const startRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      // 检测支持的 mimeType
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/mp4';
+
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        // 停止所有轨道
+        stream.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        audioChunksRef.current = [];
+
+        if (blob.size < 500) {
+          // 录音太短，忽略
+          if (callModeRef.current) {
+            setCallState('idle');
+            setTimeout(() => startCallRecording(), 500);
+          }
+          return;
+        }
+
+        // 发送到 STT
+        const text = await transcribeAudio(blob);
+        if (text && callModeRef.current) {
+          doSendCall(text);
+        } else if (text) {
+          doSend(text);
+        } else if (callModeRef.current) {
+          setCallState('idle');
+          setTimeout(() => startCallRecording(), 500);
+        }
+      };
+
+      recorder.start();
+      setRecording(true);
+    } catch (err) {
+      console.error('麦克风访问失败:', err);
+      alert('无法访问麦克风，请检查浏览器权限设置');
+      setVoiceSupported(false);
+    }
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === 'recording') {
+      recorder.stop();
+    }
+    setRecording(false);
+
+    // 清理 stream
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
+  // === STT: 发送音频到服务端识别 ===
+  const transcribeAudio = async (blob: Blob): Promise<string> => {
+    try {
+      const formData = new FormData();
+      formData.append('audio', blob, 'audio.webm');
+
+      const res = await fetch('/api/stt', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        // 如果没有配置 STT key，回退到 Web Speech API
+        if (err.error?.includes('未配置')) {
+          alert('语音识别需要配置 API key。\n\n免费获取 Groq key: https://console.groq.com\n然后在环境变量中设置 GROQ_API_KEY');
+          return '';
+        }
+        throw new Error(err.error || '识别失败');
+      }
+
+      const data = await res.json();
+      return data.text || '';
+    } catch (err: any) {
+      console.error('STT 失败:', err);
+      return '';
+    }
+  };
+
   // === TTS 朗读 ===
   const speakText = useCallback((text: string) => {
     const synth = synthRef.current;
     if (!synth) return;
     synth.cancel();
 
-    // 去掉 markdown 符号，纯口语化
     const clean = text
       .replace(/[*_~`#>|]/g, '')
       .replace(/\[.*?\]\(.*?\)/g, '')
@@ -186,16 +283,15 @@ export default function Home() {
       if (callModeRef.current) setCallState('speaking');
     };
     utterance.onend = () => {
-      // 说完后自动继续听
       if (callModeRef.current) {
-        setTimeout(() => startCallListening(), 400);
+        setTimeout(() => startCallRecording(), 400);
       } else {
         setCallState('idle');
       }
     };
     utterance.onerror = () => {
       if (callModeRef.current) {
-        setTimeout(() => startCallListening(), 400);
+        setTimeout(() => startCallRecording(), 400);
       } else {
         setCallState('idle');
       }
@@ -204,84 +300,14 @@ export default function Home() {
     synth.speak(utterance);
   }, []);
 
-  // === 通话模式：开始监听 ===
-  const startCallListening = useCallback(() => {
-    const rec = recognitionRef.current;
-    if (!rec || !callModeRef.current) return;
-    try {
-      setCallState('listening');
-      rec.start();
-    } catch {}
-  }, []);
+  // === 通话模式录音 ===
+  const startCallRecording = useCallback(() => {
+    if (!callModeRef.current) return;
+    setCallState('listening');
+    startRecording();
+  }, [startRecording]);
 
-  // === 通话模式：停止监听 ===
-  const stopCallListening = useCallback(() => {
-    const rec = recognitionRef.current;
-    if (rec) {
-      try { rec.stop(); } catch {}
-    }
-  }, []);
-
-  // 初始化语音识别
-  useEffect(() => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setVoiceSupported(false);
-      return;
-    }
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'zh-CN';
-    recognition.interimResults = true;
-    recognition.continuous = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let interim = '';
-      let final = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          final += transcript;
-        } else {
-          interim += transcript;
-        }
-      }
-      const text = final || interim;
-      if (callModeRef.current) {
-        // 通话模式：不填输入框
-        if (final.trim()) {
-          setCallState('thinking');
-          doSendCall(final.trim());
-        }
-      } else {
-        // 文本模式
-        setInput(text);
-        if (final.trim()) {
-          doSend(final.trim());
-        }
-      }
-    };
-
-    recognition.onerror = (event: SpeechRecognitionError) => {
-      console.error('语音识别错误:', event.error);
-      if (event.error === 'not-allowed') {
-        alert('麦克风权限被拒绝了，请在浏览器设置中允许访问麦克风');
-      }
-      setListening(false);
-      if (callModeRef.current) {
-        setCallState('idle');
-      }
-    };
-
-    recognition.onend = () => {
-      setListening(false);
-    };
-
-    recognitionRef.current = recognition;
-  }, []);
-
-  // === 通用发送逻辑 ===
+  // === 发送（文字模式）===
   const doSend = useCallback(async (text: string) => {
     if (!text || loadingRef.current) return;
     setInput('');
@@ -334,7 +360,6 @@ export default function Home() {
           }
         }
       }
-      lastResponseRef.current = fullContent;
     } catch {
       setMessages((prev) => [...prev, { role: 'assistant', content: '淦 信号不太好 你再说一遍' }]);
     } finally {
@@ -342,7 +367,7 @@ export default function Home() {
     }
   }, []);
 
-  // === 通话模式发送（发送完自动朗读） ===
+  // === 发送（通话模式）===
   const doSendCall = useCallback(async (text: string) => {
     if (!text || loadingRef.current) return;
 
@@ -351,6 +376,7 @@ export default function Home() {
 
     setMessages((prev) => [...prev, userMsg]);
     setLoading(true);
+    setCallState('thinking');
 
     try {
       const res = await fetch('/api/chat', {
@@ -394,8 +420,7 @@ export default function Home() {
           }
         }
       }
-      lastResponseRef.current = fullContent;
-      // AI 回复完，TTS 朗读
+      // AI 回复完，朗读
       if (callModeRef.current && fullContent) {
         speakText(fullContent);
       }
@@ -403,11 +428,12 @@ export default function Home() {
       setMessages((prev) => [...prev, { role: 'assistant', content: '淦 信号不太好 你再说一遍' }]);
       if (callModeRef.current) {
         setCallState('idle');
+        setTimeout(() => startCallRecording(), 1000);
       }
     } finally {
       setLoading(false);
     }
-  }, [speakText]);
+  }, [speakText, startCallRecording]);
 
   const sendMessage = async () => {
     const text = input.trim();
@@ -415,43 +441,35 @@ export default function Home() {
     doSend(text);
   };
 
+  // === 录音按钮 ===
+  const toggleRecording = useCallback(() => {
+    if (recording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  }, [recording, startRecording, stopRecording]);
+
   // === 进入/退出通话模式 ===
   const enterCallMode = useCallback(() => {
-    const rec = recognitionRef.current;
-    if (!rec) {
-      alert('当前浏览器不支持语音识别，请用 Chrome 或 Edge');
+    if (!voiceSupported) {
+      alert('当前浏览器不支持录音功能，请使用 Chrome、Edge 或 Firefox');
       return;
     }
     setCallMode(true);
     callModeRef.current = true;
-    // 先停止任何正在进行的 TTS
     synthRef.current?.cancel();
     setCallState('idle');
-    // 马上开始听
-    setTimeout(() => startCallListening(), 300);
-  }, [startCallListening]);
+    setTimeout(() => startCallRecording(), 500);
+  }, [voiceSupported, startCallRecording]);
 
   const exitCallMode = useCallback(() => {
     setCallMode(false);
     callModeRef.current = false;
     setCallState('idle');
-    stopCallListening();
+    stopRecording();
     synthRef.current?.cancel();
-  }, [stopCallListening]);
-
-  const toggleListening = useCallback(() => {
-    const rec = recognitionRef.current;
-    if (!rec) return;
-    if (listening) {
-      rec.stop();
-      setListening(false);
-    } else {
-      try {
-        rec.start();
-        setListening(true);
-      } catch {}
-    }
-  }, [listening]);
+  }, [stopRecording]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -481,11 +499,6 @@ export default function Home() {
         @keyframes callPulse {
           0%, 100% { box-shadow: 0 0 10px rgba(0,255,245,0.3), 0 0 30px rgba(0,255,245,0.1); }
           50% { box-shadow: 0 0 20px rgba(0,255,245,0.6), 0 0 50px rgba(0,255,245,0.25); }
-        }
-        @keyframes callRing {
-          0% { transform: scale(0.9); opacity: 0.7; }
-          50% { transform: scale(1.05); opacity: 1; }
-          100% { transform: scale(0.9); opacity: 0.7; }
         }
         @keyframes equalizer {
           0%, 100% { height: 4px; }
@@ -530,7 +543,6 @@ export default function Home() {
           </p>
         </div>
 
-        {/* 语音通话按钮 */}
         {!callMode ? (
           <button
             onClick={enterCallMode}
@@ -646,7 +658,6 @@ export default function Home() {
           className="flex items-center justify-center gap-4 px-4 py-4 border-t border-[#00fff5]/20 bg-[#0c0c1a]/95"
           style={{ animation: 'callPulse 2s ease-in-out infinite' }}
         >
-          {/* 均衡器动画 */}
           <div className="flex items-end gap-0.5 h-8">
             {[0, 1, 2, 3, 4, 5, 6, 7].map((n) => (
               <span
@@ -673,7 +684,7 @@ export default function Home() {
             <div className="text-xs mt-1" style={{ color: '#6b7a8d' }}>
               {callState === 'listening' && '请说话'}
               {callState === 'thinking' && '稍等'}
-              {callState === 'speaking' && '坑爹正在回复你'}
+              {callState === 'speaking' && '坑爹在回复'}
               {callState === 'idle' && '准备中...'}
             </div>
           </div>
@@ -698,7 +709,6 @@ export default function Home() {
           <div className="absolute bottom-0 left-0 w-3 h-[1px] bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
           <div className="absolute bottom-0 left-0 w-[1px] h-3 bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
 
-          {/* 表情包面板 */}
           {showStickers && (
             <div
               ref={stickerPanelRef}
@@ -799,11 +809,11 @@ export default function Home() {
             </button>
             {voiceSupported && (
               <button
-                onClick={toggleListening}
+                onClick={toggleRecording}
                 disabled={loading}
                 className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center text-lg transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border bg-black"
                 style={
-                  listening
+                  recording
                     ? {
                         borderColor: '#ff00ff',
                         boxShadow: '0 0 16px rgba(255,0,255,0.6)',
@@ -811,9 +821,9 @@ export default function Home() {
                       }
                     : { borderColor: 'rgba(0,255,245,0.3)', color: '#6b7a8d' }
                 }
-                title={listening ? '点击停止' : '语音输入'}
+                title={recording ? '点击停止' : '语音输入'}
               >
-                {listening ? '🎙️' : '🎤'}
+                {recording ? '🔴' : '🎤'}
               </button>
             )}
             <div className="flex-1 relative">
@@ -829,12 +839,12 @@ export default function Home() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={listening ? '正在监听...' : voiceSupported ? '输入指令 或点击🎤...' : '输入指令...'}
+                placeholder={recording ? '录音中...' : voiceSupported ? '输入指令 或点🎤录音...' : '输入指令...'}
                 disabled={loading}
                 className="w-full pl-8 pr-4 py-2.5 rounded-lg text-sm placeholder-[#6b7a8d]/50 focus:outline-none transition-all disabled:opacity-40 font-mono bg-black border text-[#00fff5]"
                 style={{
-                  borderColor: listening ? '#ff00ff' : 'rgba(0,255,245,0.3)',
-                  boxShadow: listening
+                  borderColor: recording ? '#ff00ff' : 'rgba(0,255,245,0.3)',
+                  boxShadow: recording
                     ? '0 0 10px rgba(255,0,255,0.3), inset 0 0 10px rgba(255,0,255,0.05)'
                     : 'inset 0 0 10px rgba(0,255,245,0.03)',
                 }}
@@ -855,7 +865,7 @@ export default function Home() {
               {loading ? '...' : 'SEND'}
             </button>
           </div>
-          {listening && (
+          {recording && (
             <div className="flex items-center gap-2 mt-2 px-1">
               <span className="flex gap-0.5">
                 {[0, 1, 2, 3].map((n) => (
