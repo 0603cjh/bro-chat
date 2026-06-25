@@ -7,7 +7,6 @@ interface Message {
   content: string;
 }
 
-// Web Speech API 类型声明
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
   resultIndex: number;
@@ -17,6 +16,16 @@ interface SpeechRecognitionError extends Event {
   error: string;
   message: string;
 }
+
+// 黑客骚话
+const HACKER_PHRASES = [
+  '> 信号接入中...',
+  '> 协议握手完成_',
+  '> 神经网络已激活_',
+  '> 量子加密通道已建立_',
+  '> 赛博空间连接稳定_',
+  '> 数据流同步中...',
+];
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
@@ -29,19 +38,18 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(true);
+  const [bootText, setBootText] = useState(HACKER_PHRASES[0]);
+  const [glitchTrigger, setGlitchTrigger] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
-  // 用 ref 保存最新 messages，避免语音回调里的闭包陷阱
   const messagesRef = useRef(messages);
+  const loadingRef = useRef(loading);
 
-  // 每次 messages 更新时同步到 ref
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
 
-  // 用 ref 保存 loading 状态
-  const loadingRef = useRef(loading);
   useEffect(() => {
     loadingRef.current = loading;
   }, [loading]);
@@ -49,6 +57,26 @@ export default function Home() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // 启动动画：轮换黑客短语
+  useEffect(() => {
+    let i = 0;
+    const timer = setInterval(() => {
+      i = (i + 1) % HACKER_PHRASES.length;
+      setBootText(HACKER_PHRASES[i]);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 随机毛刺效果
+  useEffect(() => {
+    const trigger = () => {
+      setGlitchTrigger(true);
+      setTimeout(() => setGlitchTrigger(false), 200);
+    };
+    const timer = setInterval(trigger, 8000 + Math.random() * 12000);
+    return () => clearInterval(timer);
+  }, []);
 
   // 初始化语音识别
   useEffect(() => {
@@ -78,7 +106,6 @@ export default function Home() {
       const text = final || interim;
       setInput(text);
       if (final.trim()) {
-        // 拿到最终文本后发送
         doSend(final.trim());
       }
     };
@@ -96,10 +123,8 @@ export default function Home() {
     };
 
     recognitionRef.current = recognition;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // doSend 独立函数，通过 ref 读最新 state，避免闭包陷阱
   const doSend = useCallback(async (text: string) => {
     if (!text || loadingRef.current) return;
     setInput('');
@@ -153,9 +178,7 @@ export default function Home() {
                   return updated;
                 });
               }
-            } catch {
-              // 忽略解析错误
-            }
+            } catch {}
           }
         }
       }
@@ -226,9 +249,7 @@ export default function Home() {
                   return updated;
                 });
               }
-            } catch {
-              // 忽略解析错误
-            }
+            } catch {}
           }
         }
       }
@@ -237,7 +258,7 @@ export default function Home() {
         ...prev,
         {
           role: 'assistant',
-          content: '淦 信号不太好 你再说一遍',
+          content: '>[ERROR] 信号丢失... 你再说一遍',
         },
       ]);
     } finally {
@@ -256,9 +277,7 @@ export default function Home() {
       try {
         recognition.start();
         setListening(true);
-      } catch {
-        // 已经在识别中
-      }
+      } catch {}
     }
   }, [listening]);
 
@@ -270,18 +289,78 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col h-dvh max-w-2xl mx-auto">
+    <div className="flex flex-col h-dvh max-w-2xl mx-auto relative">
+      {/* 扫描线悬停效果 - hover任何消息时触发 */}
+      <style>{`
+        .msg-bubble:hover::before {
+          content: '';
+          position: absolute;
+          left: 0;
+          width: 100%;
+          height: 2px;
+          background: var(--neon-cyan);
+          box-shadow: 0 0 8px var(--neon-cyan);
+          animation: scanSweep 0.6s linear;
+          pointer-events: none;
+        }
+        @keyframes scanSweep {
+          0% { top: -2px; }
+          100% { top: 100%; }
+        }
+        .cyber-card {
+          background: var(--bg-elevated);
+          border: 1px solid rgba(0, 255, 245, 0.15);
+          box-shadow: 0 0 10px rgba(0, 255, 245, 0.05), inset 0 0 20px rgba(0, 255, 245, 0.02);
+        }
+        .neon-border-cyan {
+          border-color: var(--neon-cyan);
+          box-shadow: 0 0 6px var(--neon-cyan), 0 0 12px rgba(0, 255, 245, 0.2);
+        }
+        .neon-border-magenta {
+          border-color: var(--neon-magenta);
+          box-shadow: 0 0 6px var(--neon-magenta), 0 0 12px rgba(255, 0, 255, 0.2);
+        }
+      `}</style>
+
       {/* Header */}
-      <header className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 bg-[#1a1a2e]/95 backdrop-blur sticky top-0 z-10">
-        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center text-lg flex-shrink-0">
-          😈
+      <header className="relative flex items-center gap-3 px-4 py-3 border-b border-[#00fff5]/20 bg-[#0c0c1a]/95 backdrop-blur sticky top-0 z-10">
+        {/* 角落装饰 */}
+        <div className="absolute top-0 left-0 w-3 h-[1px] bg-[#00fff5] shadow-[0_0_6px_#00fff5]" />
+        <div className="absolute top-0 left-0 w-[1px] h-3 bg-[#00fff5] shadow-[0_0_6px_#00fff5]" />
+        <div className="absolute top-0 right-0 w-3 h-[1px] bg-[#ff00ff] shadow-[0_0_6px_#ff00ff]" />
+        <div className="absolute top-0 right-0 w-[1px] h-3 bg-[#ff00ff] shadow-[0_0_6px_#ff00ff]" />
+
+        <div
+          className={`relative w-10 h-10 rounded-lg bg-black border border-[#00fff5]/50 flex items-center justify-center text-lg flex-shrink-0 overflow-hidden`}
+          style={{
+            boxShadow: '0 0 10px rgba(0,255,245,0.4), 0 0 20px rgba(0,255,245,0.15), inset 0 0 10px rgba(0,255,245,0.1)',
+          }}
+        >
+          <span style={glitchTrigger ? { animation: 'glitch 0.2s ease' } : {}}>😈</span>
         </div>
+
         <div className="flex-1 min-w-0">
-          <h1 className="font-semibold text-white text-base">坑爹</h1>
-          <p className="text-xs text-gray-400 truncate">嵌入式工程师 · 嘻嘻好爽啊</p>
+          <h1
+            className="font-bold text-base tracking-wider uppercase"
+            style={{
+              color: '#00fff5',
+              textShadow: '0 0 10px #00fff5, 0 0 20px #00fff5, 0 0 40px #00fff5',
+              animation: glitchTrigger ? 'glitchText 0.3s ease' : 'none',
+            }}
+          >
+            坑爹_///synth
+          </h1>
+          <p className="text-xs truncate" style={{ color: '#6b7a8d', fontFamily: "'Courier New', monospace" }}>
+            {bootText}
+          </p>
         </div>
-        <span className="text-xs px-2 py-1 rounded-full bg-green-500/20 text-green-400 border border-green-500/30">
-          在线
+
+        <span
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border text-[#39ff14] border-[#39ff14]/40 bg-[#39ff14]/5"
+          style={{ animation: 'statusPulse 2s ease-in-out infinite' }}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-[#39ff14] shadow-[0_0_6px_#39ff14]" />
+          ONLINE
         </span>
       </header>
 
@@ -293,24 +372,58 @@ export default function Home() {
             className={`message-enter flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             {msg.role === 'assistant' && (
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center text-sm flex-shrink-0 mr-2 mt-1">
+              <div
+                className="w-8 h-8 rounded-lg border flex items-center justify-center text-sm flex-shrink-0 mr-2 mt-1 bg-black"
+                style={{
+                  borderColor: 'rgba(255,0,255,0.5)',
+                  boxShadow: '0 0 8px rgba(255,0,255,0.3), inset 0 0 8px rgba(255,0,255,0.1)',
+                }}
+              >
                 😈
               </div>
             )}
             <div
-              className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
+              className={`msg-bubble relative max-w-[80%] px-4 py-2.5 rounded text-sm leading-relaxed whitespace-pre-wrap break-words ${
                 msg.role === 'user'
-                  ? 'bg-blue-600 text-white rounded-br-md'
-                  : 'bg-gray-800 text-gray-100 rounded-bl-md'
+                  ? 'rounded-tr-none'
+                  : 'rounded-tl-none'
               }`}
+              style={
+                msg.role === 'user'
+                  ? {
+                      background: 'rgba(0,255,245,0.08)',
+                      border: '1px solid rgba(0,255,245,0.3)',
+                      color: '#00fff5',
+                      boxShadow: '0 0 8px rgba(0,255,245,0.1), inset 0 0 12px rgba(0,255,245,0.03)',
+                    }
+                  : {
+                      background: 'rgba(255,0,255,0.05)',
+                      border: '1px solid rgba(255,0,255,0.15)',
+                      color: '#e0e8f0',
+                      boxShadow: '0 0 8px rgba(255,0,255,0.05), inset 0 0 12px rgba(255,0,255,0.02)',
+                    }
+              }
             >
               {msg.content}
               {msg.role === 'assistant' && i === messages.length - 1 && loading && (
-                <span className="inline-block w-1.5 h-4 bg-gray-400 ml-1 animate-pulse rounded-sm" />
+                <span
+                  className="inline-block w-1.5 h-4 ml-1 rounded-sm align-middle"
+                  style={{
+                    background: '#00fff5',
+                    boxShadow: '0 0 6px #00fff5',
+                    animation: 'cursorBlink 0.8s step-end infinite',
+                  }}
+                />
               )}
             </div>
             {msg.role === 'user' && (
-              <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center text-sm flex-shrink-0 ml-2 mt-1">
+              <div
+                className="w-8 h-8 rounded-lg border flex items-center justify-center text-sm flex-shrink-0 ml-2 mt-1 bg-black"
+                style={{
+                  borderColor: 'rgba(0,255,245,0.5)',
+                  boxShadow: '0 0 8px rgba(0,255,245,0.3), inset 0 0 8px rgba(0,255,245,0.1)',
+                }}
+              >
                 🧑
               </div>
             )}
@@ -320,51 +433,85 @@ export default function Home() {
       </main>
 
       {/* Input */}
-      <footer className="px-4 py-3 border-t border-gray-800 bg-[#1a1a2e]/95 backdrop-blur sticky bottom-0">
+      <footer className="px-4 py-3 border-t border-[#00fff5]/20 bg-[#0c0c1a]/95 backdrop-blur sticky bottom-0">
+        {/* 角落装饰 */}
+        <div className="absolute bottom-0 left-0 w-3 h-[1px] bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
+        <div className="absolute bottom-0 left-0 w-[1px] h-3 bg-[#ffd600] shadow-[0_0_6px_#ffd600]" />
+
         <div className="flex gap-2 items-center">
           {/* 麦克风按钮 */}
           {voiceSupported && (
             <button
               onClick={toggleListening}
               disabled={loading}
-              className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center text-lg transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
+              className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center text-lg transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border bg-black"
+              style={
                 listening
-                  ? 'bg-red-500 text-white shadow-[0_0_20px_rgba(239,68,68,0.5)] animate-pulse'
-                  : 'bg-gray-800 border border-gray-700 text-gray-300 hover:border-orange-500 hover:text-orange-400'
-              }`}
+                  ? {
+                      borderColor: '#ff00ff',
+                      boxShadow: '0 0 16px rgba(255,0,255,0.6), 0 0 32px rgba(255,0,255,0.2)',
+                      animation: 'neonFlicker 1.8s ease-in-out infinite',
+                    }
+                  : {
+                      borderColor: 'rgba(0,255,245,0.3)',
+                      color: '#6b7a8d',
+                    }
+              }
               title={listening ? '点击停止' : '语音输入'}
             >
               {listening ? '🎙️' : '🎤'}
             </button>
           )}
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={listening ? '正在听...' : voiceSupported ? '打字或点🎤说话...' : '说点啥...'}
-            disabled={loading}
-            className="flex-1 px-4 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-sm text-white placeholder-gray-500 focus:outline-none focus:border-orange-500 transition-colors disabled:opacity-50"
-            autoFocus
-          />
+          <div className="flex-1 relative">
+            <span
+              className="absolute left-4 top-1/2 -translate-y-1/2 text-sm select-none pointer-events-none z-10"
+              style={{ color: '#00fff5', opacity: 0.6 }}
+            >
+              &gt;
+            </span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={listening ? '正在监听...' : voiceSupported ? '输入指令 或点击🎤...' : '输入指令...'}
+              disabled={loading}
+              className="w-full pl-8 pr-4 py-2.5 rounded-lg text-sm placeholder-[#6b7a8d]/50 focus:outline-none transition-all disabled:opacity-40 font-mono bg-black border text-[#00fff5]"
+              style={{
+                borderColor: listening ? '#ff00ff' : 'rgba(0,255,245,0.3)',
+                boxShadow: listening
+                  ? '0 0 10px rgba(255,0,255,0.3), inset 0 0 10px rgba(255,0,255,0.05)'
+                  : 'inset 0 0 10px rgba(0,255,245,0.03)',
+              }}
+              autoFocus
+            />
+          </div>
           <button
             onClick={sendMessage}
             disabled={loading || !input.trim()}
-            className="flex-shrink-0 px-5 py-2.5 bg-gradient-to-r from-orange-500 to-red-600 text-white rounded-xl text-sm font-medium hover:opacity-90 active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex-shrink-0 px-5 py-2.5 rounded-lg text-sm font-bold tracking-wider transition-all active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed border uppercase"
+            style={{
+              background: 'rgba(255,0,255,0.1)',
+              borderColor: 'rgba(255,0,255,0.4)',
+              color: '#ff00ff',
+              boxShadow: input.trim() ? '0 0 10px rgba(255,0,255,0.3)' : 'none',
+            }}
           >
-            {loading ? '...' : '发送'}
+            {loading ? '...' : 'SEND'}
           </button>
         </div>
         {listening && (
           <div className="flex items-center gap-2 mt-2 px-1">
             <span className="flex gap-0.5">
-              <span className="w-1 h-4 bg-red-400 rounded-full animate-[wave_0.8s_ease-in-out_infinite]" />
-              <span className="w-1 h-4 bg-red-400 rounded-full animate-[wave_0.8s_ease-in-out_0.15s_infinite]" />
-              <span className="w-1 h-4 bg-red-400 rounded-full animate-[wave_0.8s_ease-in-out_0.3s_infinite]" />
-              <span className="w-1 h-4 bg-red-400 rounded-full animate-[wave_0.8s_ease-in-out_0.45s_infinite]" />
+              <span className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff] animate-[wave_0.8s_ease-in-out_infinite]" />
+              <span className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff] animate-[wave_0.8s_ease-in-out_0.15s_infinite]" />
+              <span className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff] animate-[wave_0.8s_ease-in-out_0.3s_infinite]" />
+              <span className="w-1 h-4 rounded-full bg-[#ff00ff] shadow-[0_0_6px_#ff00ff] animate-[wave_0.8s_ease-in-out_0.45s_infinite]" />
             </span>
-            <span className="text-xs text-red-400">说话中...</span>
+            <span className="text-xs font-mono tracking-wider" style={{ color: '#ff00ff', textShadow: '0 0 6px #ff00ff' }}>
+              [RECORDING...]
+            </span>
           </div>
         )}
       </footer>
